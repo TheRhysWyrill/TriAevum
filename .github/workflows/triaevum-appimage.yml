@@ -1,0 +1,176 @@
+name: TriAevum AppImage builder
+
+# Publisher build, not player qualification. The audited Linux release package
+# is produced outside CI (runtime built in the Steam Runtime 4 SDK, frozen
+# Forge, publisher-built title module), then this workflow stages the AppDir
+# with tools/triaevum_release/appimage_package.py and packages it with the
+# pinned appimagetool and type2 runtime that scripts/package-appimage.sh
+# verifies by SHA-256. It never downloads tools implicitly and never publishes.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version used in the artifact name, for example v0.8.0-beta.1.2"
+        type: string
+        required: true
+      package_artifact:
+        description: "Artifact holding the audited Linux package: an extracted tree with release-manifest.json, or one .tar.gz/.tgz/.zip"
+        type: string
+        default: triaevum-linux-package
+      package_url:
+        description: "HTTPS URL of the audited Linux package archive; used instead of package_artifact when set"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: triaevum-appimage-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  appimage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install packaging and audit tools
+        run: |
+          python -m pip install -r tools/triaevum_release/requirements-tests.txt
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends binutils file unzip
+      - name: Test the release policy before shipping anything
+        run: python -m unittest discover tools/triaevum_release -p "test_*.py"
+      - name: Download the audited package artifact
+        if: inputs.package_url == ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.package_artifact }}
+          path: build/download
+      - name: Download the audited package URL
+        if: inputs.package_url != ''
+        env:
+          PACKAGE_URL: ${{ inputs.package_url }}
+        run: |
+          set -euo pipefail
+          mkdir -p build/download
+          name="package"
+          case "$PACKAGE_URL" in
+            *.zip) name="package.zip" ;;
+            *.tar.gz|*.tgz) name="package.tar.gz" ;;
+          esac
+          curl --fail --location --retry 3 --retry-delay 2 \
+            --output "build/download/$name" "$PACKAGE_URL"
+      - name: Locate the audited Linux package
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+          rm -rf build/package
+          manifests=(build/download/**/release-manifest.json)
+          if [[ ${#manifests[@]} -eq 0 ]]; then
+            archives=(build/download/**/*.tar.gz build/download/**/*.tgz build/download/**/*.zip)
+            if [[ ${#archives[@]} -ne 1 ]]; then
+              printf 'Found %d candidate archives; provide exactly one audited Linux package archive, or an extracted package tree with release-manifest.json.\n' "${#archives[@]}" >&2
+              exit 1
+            fi
+            mkdir -p build/package
+            case "${archives[0]}" in
+              *.zip) unzip -q "${archives[0]}" -d build/package ;;
+              *) tar --extract --file "${archives[0]}" --directory build/package --no-same-owner ;;
+            esac
+            manifests=(build/package/**/release-manifest.json)
+          fi
+          if [[ ${#manifests[@]} -ne 1 ]]; then
+            printf 'Expected exactly one release-manifest.json in the audited package, found %d.\n' "${#manifests[@]}" >&2
+            exit 1
+          fi
+          package="$(cd -- "$(dirname -- "${manifests[0]}")" && pwd)"
+          # Fail before staging: a Windows package is audited, just not buildable here.
+          TRIAEVUM_PACKAGE="$package" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["TRIAEVUM_PACKAGE"])
+          release = json.loads((root / "release-manifest.json").read_text(encoding="utf-8"))["release"]
+          print("target:", release["target"])
+          print("version:", release["version"])
+          print("qualification:", release.get("qualification", "unspecified"))
+          print("precompiled title:", release.get("contains_title_code"))
+          print("files:", len(json.loads((root / "release-manifest.json").read_text(encoding="utf-8"))["files"]))
+          if release["target"] != "x86_64-unknown-linux-gnu":
+              raise SystemExit(f"AppImage requires an audited Linux x86-64 package, not {release['target']}")
+          PY
+          printf 'TRIAEVUM_PACKAGE=%s\n' "$package" >> "$GITHUB_ENV"
+      - name: Acquire the pinned AppImage tools
+        # scripts/package-appimage.sh owns the SHA-256 pins and refuses others.
+        run: |
+          set -euo pipefail
+          mkdir -p build/tools
+          curl --fail --location --retry 3 --retry-delay 2 \
+            --output build/tools/appimagetool-x86_64.AppImage \
+            https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          curl --fail --location --retry 3 --retry-delay 2 \
+            --output build/tools/runtime-x86_64 \
+            https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
+          chmod 0755 build/tools/appimagetool-x86_64.AppImage build/tools/runtime-x86_64
+      - name: Stage the AppDir and build the AppImage
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          out="$PWD/build/out/TriAevum-$VERSION-Linux-x86_64.AppImage"
+          mkdir -p build/out
+          bash scripts/package-appimage.sh "$TRIAEVUM_PACKAGE" build/AppDir "$out" \
+            build/tools/appimagetool-x86_64.AppImage \
+            build/tools/runtime-x86_64 | tee build/out/packaging.log
+          printf 'APPIMAGE_PATH=%s\n' "$out" >> "$GITHUB_ENV"
+      - name: Verify the AppImage without FUSE
+        # Extraction needs no privileged mount, and the audit re-runs against
+        # exactly what the squashfs ships, not against the staging directory.
+        run: |
+          set -euo pipefail
+          mkdir -p build/smoke
+          cd build/smoke
+          "../out/$(basename -- "$APPIMAGE_PATH")" --appimage-extract >/dev/null
+          test -x squashfs-root/AppRun
+          test -x squashfs-root/usr/lib/triaevum/TriAevumForge
+          test -x squashfs-root/usr/lib/triaevum/TriAevum
+          test -f squashfs-root/usr/lib/triaevum/release-manifest.json
+          test -f "squashfs-root/io.github.coccofresco.TriAevum.desktop"
+          cd "$GITHUB_WORKSPACE"
+          APPIMAGE_PATH="$APPIMAGE_PATH" PYTHONPATH=. python - <<'PY'
+          import os
+          from pathlib import Path
+
+          from tools.triaevum_release.audit_release import audit_release
+
+          header = Path(os.environ["APPIMAGE_PATH"]).read_bytes()[:12]
+          if header[8:11] != b"AI\x02":
+              raise SystemExit(f"not a type-2 AppImage: {header!r}")
+          payload = Path("build/smoke/squashfs-root/usr/lib/triaevum")
+          result = audit_release(payload)
+          print("payload audit:", result.summary)
+          if not result.ok:
+              raise SystemExit("; ".join(result.errors))
+          PY
+          cd build/out
+          sha256sum "$(basename -- "$APPIMAGE_PATH")" > "$(basename -- "$APPIMAGE_PATH").sha256"
+          cat "$(basename -- "$APPIMAGE_PATH").sha256"
+      - name: Upload the AppImage, checksum and packaging log
+        uses: actions/upload-artifact@v4
+        with:
+          name: TriAevum-AppImage-${{ inputs.version }}
+          path: |
+            build/out/*.AppImage
+            build/out/*.sha256
+            build/out/packaging.log
+          if-no-files-found: error
+          # The AppImage is already compressed; do not spend runner time again.
+          compression-level: 0
