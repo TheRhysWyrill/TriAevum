@@ -25,6 +25,7 @@ import argparse
 import contextlib
 import functools
 import json
+import ntpath
 import os
 import re
 import shutil
@@ -448,10 +449,20 @@ def scenario_command(scenarios: dict, item: dict, run_dir: Path, save_dir: Path 
     return command
 
 
+def is_absolute_reference(value: str) -> bool:
+    """Absolute on this host or on the Windows host the battery drives.
+
+    Scenarios are written for Windows (`I:/repo`, `J:/b.json`) and are also
+    resolved on a Linux publisher host, where POSIX rules call a drive or UNC
+    path relative and would rebase it onto the repository.
+    """
+    return Path(value).is_absolute() or bool(ntpath.splitdrive(value)[0])
+
+
 def resolve_scenario_paths(item: dict, repository: Path) -> dict:
     """The item with its relative inputs (SCENARIO_PATH_KEYS) made relative to the repository."""
     return dict(item, **{key: str(repository / item[key]) for key in SCENARIO_PATH_KEYS
-                         if item.get(key) and not Path(item[key]).is_absolute()})
+                         if item.get(key) and not is_absolute_reference(item[key])})
 
 
 def scenario_passes(item: dict) -> list[tuple[str, dict]]:
