@@ -112,7 +112,11 @@ betas were qualified on NVIDIA's proprietary driver.
   your file manager or with `chmod +x TriAevum-*.AppImage`, open it and select
   your decrypted ROM in Forge. `--forge` reopens preparation;
   `--appimage-extract-and-run` works on systems without FUSE. Your data lives in
-  `$XDG_DATA_HOME/TriAevum` (normally `~/.local/share/TriAevum`).
+  a `TriAevum` folder beside the AppImage, so copying that folder to another
+  drive or machine takes your installation with it. If that folder cannot be
+  written (a read-only drive, or the AppImage in a system-wide location), or
+  you already installed with an earlier version, your data lives in
+  `$XDG_DATA_HOME/TriAevum` (normally `~/.local/share/TriAevum`) instead.
 - **Flatpak**: `flatpak install --user TriAevum-*-Linux-x86_64.flatpak`, then
   launch TriAevum from your applications menu. Your data lives in
   `~/.var/app/io.github.coccofresco.TriAevum/`.
@@ -127,7 +131,8 @@ Forge prepares the bundled shaders for your GPU during setup (a few minutes
 the first time on a machine); shaders encountered later are cached while
 playing. An Internet connection is only needed for the optional HD interface
 pack and mods. Back up your saves, settings and prepared data: `data/` beside
-the Windows application, or the Linux folders above.
+the Windows application, or `data/` inside the AppImage's `TriAevum` folder or
+the Linux folders above.
 
 ## Graphics and controls
 

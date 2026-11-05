@@ -9,6 +9,9 @@ from typing import Mapping
 
 FLATPAK_ID = "io.github.coccofresco.TriAevum"
 APPIMAGE_PAYLOAD = ("usr", "lib", "triaevum")
+# Beside a portable AppImage this folder holds what the shared XDG root holds,
+# so copying the folder that contains the AppImage carries the installation.
+PORTABLE_DIRECTORY = "TriAevum"
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,64 @@ def appimage_root(package: Path, appdir: str = "") -> Path | None:
     return None
 
 
+def _shared_activation(env: Mapping[str, str]) -> Path | None:
+    """The per-user activation root, or None without an absolute home."""
+    data_home = env.get("XDG_DATA_HOME", "")
+    if not data_home or not Path(data_home).is_absolute():
+        home = env.get("HOME", "")
+        if not home or not Path(home).is_absolute():
+            return None
+        data_home = str(Path(home) / ".local/share")
+    return (Path(data_home) / PORTABLE_DIRECTORY).resolve()
+
+
+def portable_activation(env: Mapping[str, str]) -> Path | None:
+    """Storage beside the AppImage file, or None when the host did not name it.
+
+    Only the type-2 runtime's `APPIMAGE` names the file the user actually keeps:
+    the mounted AppDir is temporary, so a launch that cannot name its AppImage
+    (a direct payload binary, an AppRun from an extracted AppDir) keeps the
+    shared root.
+    """
+    appimage = env.get("APPIMAGE", "")
+    if not appimage or not Path(appimage).is_absolute():
+        return None
+    parent = Path(appimage).resolve().parent
+    if not parent.is_dir():
+        return None
+    return parent / PORTABLE_DIRECTORY
+
+
+def _writable_directory(path: Path) -> bool:
+    try:
+        return path.is_dir() and os.access(path, os.W_OK | os.X_OK)
+    except OSError:
+        return False
+
+
+def _appimage_layout(package: Path, appdir: Path, env: Mapping[str, str]) -> HostLayout:
+    """Portable beside the AppImage when possible, else the shared XDG root.
+
+    A writable folder beside the AppImage is the default, so a copy on another
+    drive or machine keeps its prepared title, saves and settings. The shared
+    root stays in charge where that folder cannot be written (read-only media,
+    a system-wide location) and for a user who already installed there:
+    starting a second, empty installation would look like lost saves.
+    """
+    shared = _shared_activation(env)
+    if shared is not None and shared.is_relative_to(appdir):
+        raise ValueError("AppImage activation must be outside the read-only package")
+    portable = portable_activation(env)
+    if portable is not None and not portable.is_relative_to(appdir):
+        if _writable_directory(portable):
+            return HostLayout(package, portable)
+        if (shared is None or not shared.is_dir()) and _writable_directory(portable.parent):
+            return HostLayout(package, portable)
+    if shared is None:
+        raise ValueError("AppImage requires an absolute HOME or XDG_DATA_HOME")
+    return HostLayout(package, shared)
+
+
 def for_package(package: Path, *, environ: Mapping[str, str] | None = None,
                 platform: str | None = None) -> HostLayout:
     env = os.environ if environ is None else environ
@@ -59,16 +120,7 @@ def for_package(package: Path, *, environ: Mapping[str, str] | None = None,
     package = package.resolve()
     appdir = appimage_root(package, env.get("APPDIR", ""))
     if platform == "linux" and appdir is not None and package.is_relative_to(appdir):
-        data_home = env.get("XDG_DATA_HOME", "")
-        if not data_home or not Path(data_home).is_absolute():
-            home = env.get("HOME", "")
-            if not home or not Path(home).is_absolute():
-                raise ValueError("AppImage requires an absolute HOME or XDG_DATA_HOME")
-            data_home = str(Path(home) / ".local/share")
-        activation = (Path(data_home) / "TriAevum").resolve()
-        if activation.is_relative_to(appdir):
-            raise ValueError("AppImage activation must be outside the read-only package")
-        return HostLayout(package, activation)
+        return _appimage_layout(package, appdir, env)
     if platform != "linux" or env.get("FLATPAK_ID") != FLATPAK_ID:
         return HostLayout(package, package)
     data_home = env.get("XDG_DATA_HOME", "")

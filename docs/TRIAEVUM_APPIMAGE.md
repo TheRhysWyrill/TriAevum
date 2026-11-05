@@ -28,9 +28,23 @@ gyro to mouse/right-stick; do not promise direct sensor access for a virtual pad
 ## Storage and Updates
 
 `AppDir/usr/lib/triaevum` contains only audited immutable package resources.
-`$XDG_DATA_HOME/TriAevum`, or `$HOME/.local/share/TriAevum` when unset, owns
-activation, receipts, data, saves, profiles and caches. Mount path/name changes
-must not change this directory. AppRun also works from an extracted AppDir.
+A writable `TriAevum` folder beside the AppImage file owns activation, receipts,
+data, saves, profiles and caches (amendments 2026-09-14, 2026-11-05). A portable
+copy on another drive or machine therefore carries its installation, because the
+folder holds exactly what the shared root holds: relocation is a plain copy of
+the folder the AppImage sits in. The shared root, `$XDG_DATA_HOME/TriAevum` or
+`$HOME/.local/share/TriAevum` when unset, stays in charge where that folder
+cannot be written (read-only media, a system-wide location), where the launch
+cannot name its AppImage (a direct payload binary or an AppRun from an extracted
+AppDir; `--appimage-extract-and-run` still reports the file), and for a user
+whose installation already lives there: an upgrade must not start a second,
+empty installation.
+
+The order is fixed: an existing writable portable folder, then an existing
+shared installation, then a new portable folder, then the shared root. An
+unwritable portable folder never silently becomes a different data directory.
+Mount path/name changes must not change either directory, and both remain
+outside the mounted AppDir. AppRun also works from an extracted AppDir.
 The shared transactional Forge update path rebinds packaged runtime updates;
 never patch a launch profile without updating its activation receipt.
 

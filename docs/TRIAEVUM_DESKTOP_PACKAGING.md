@@ -1,6 +1,7 @@
 # Desktop Packaging Decision
 
-Decision updated: 2026-09-14. Windows releases remain portable ZIPs.
+Decision updated: 2026-09-14, portable AppImage storage added 2026-11-05.
+Windows releases remain portable ZIPs.
 The next Linux desktop / Steam Deck package is a single x86-64 AppImage,
 containing Forge and the native Vulkan runtime. See
 [AppImage packaging and qualification](TRIAEVUM_APPIMAGE.md).
@@ -68,8 +69,11 @@ access to the original ROM. Do not publish ROM data, saves or TopScreen payloads
 
 One host layout adapter separates immutable package resources from writable
 activation and data roots. Windows maps these roots to its portable directory;
-Flatpak maps them to /app and XDG private storage. The same importer, receipts,
-atomic activation, save format and update logic consume that adapter. Locks,
+the AppImage maps them to a `TriAevum` folder beside the AppImage file when that
+folder is writable, and to the XDG root otherwise
+([storage contract](TRIAEVUM_APPIMAGE.md#storage-and-updates)); Flatpak maps them
+to /app and XDG private storage. The same importer, receipts, atomic activation,
+save format and update logic consume that adapter. Locks,
 journals, downloaded textures and launch profiles must never be written to /app.
 Do not copy the complete installed application into the home directory to make
 its current write assumptions work. No Flatpak branches in PICA or title logic;

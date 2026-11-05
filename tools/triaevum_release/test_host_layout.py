@@ -51,6 +51,84 @@ class HostLayoutTests(unittest.TestCase):
                                          platform="linux", environ=env)
                     self.assertEqual(layout.activation, expected)
 
+    def test_appimage_defaults_to_storage_beside_the_file(self):
+        """A portable copy keeps its installation in the folder it lives in."""
+        folder = self.root / "Games"
+        folder.mkdir()
+        appimage = folder / "TriAevum-x86_64.AppImage"
+        appimage.write_bytes(b"")
+        for appdir in ("", str(self.root / "mount-b"), str(self.root / "mount-b")):
+            env = {"HOME": str(self.root / "home"), "APPIMAGE": str(appimage), "APPDIR": appdir}
+            with self.subTest(appdir=appdir):
+                layout = for_package(self.root / "mount-a/usr/lib/triaevum",
+                                     platform="linux", environ=env)
+                self.assertEqual(layout.activation, folder / "TriAevum")
+                self.assertEqual(layout.data, folder / "TriAevum/data")
+                self.assertFalse(layout.use_file_portal)
+
+    def test_portable_storage_needs_no_home_directory(self):
+        folder = self.root / "Games"
+        folder.mkdir()
+        appimage = folder / "TriAevum.AppImage"
+        appimage.write_bytes(b"")
+        layout = for_package(self.root / "mount/usr/lib/triaevum", platform="linux",
+                             environ={"APPIMAGE": str(appimage)})
+        self.assertEqual(layout.activation, folder / "TriAevum")
+
+    def test_portable_folder_wins_over_a_shared_installation(self):
+        folder = self.root / "Games"
+        (folder / "TriAevum").mkdir(parents=True)
+        (self.xdg / "TriAevum").mkdir(parents=True)
+        appimage = folder / "TriAevum.AppImage"
+        appimage.write_bytes(b"")
+        layout = for_package(self.root / "mount/usr/lib/triaevum", platform="linux",
+                             environ={"HOME": str(self.root / "home"),
+                                      "XDG_DATA_HOME": str(self.xdg),
+                                      "APPIMAGE": str(appimage)})
+        self.assertEqual(layout.activation, folder / "TriAevum")
+
+    def test_existing_shared_installation_is_not_abandoned(self):
+        """An upgrade must not look like a fresh install with lost saves."""
+        folder = self.root / "Games"
+        folder.mkdir()
+        appimage = folder / "TriAevum.AppImage"
+        appimage.write_bytes(b"")
+        (self.xdg / "TriAevum" / "data").mkdir(parents=True)
+        layout = for_package(self.root / "mount/usr/lib/triaevum", platform="linux",
+                             environ={"HOME": str(self.root / "home"),
+                                      "XDG_DATA_HOME": str(self.xdg),
+                                      "APPIMAGE": str(appimage)})
+        self.assertEqual(layout.activation, self.xdg / "TriAevum")
+        self.assertFalse((folder / "TriAevum").exists())
+
+    def test_unwritable_appimage_location_uses_shared_storage(self):
+        folder = self.root / "media/read-only"
+        folder.mkdir(parents=True)
+        appimage = folder / "TriAevum.AppImage"
+        appimage.write_bytes(b"")
+        env = {"HOME": str(self.root / "home"), "APPIMAGE": str(appimage)}
+        with patch("host_layout.os.access", return_value=False):
+            layout = for_package(self.root / "mount/usr/lib/triaevum", platform="linux",
+                                 environ=env)
+        self.assertEqual(layout.activation, self.root / "home/.local/share/TriAevum")
+        with patch("host_layout.os.access", return_value=False), self.assertRaises(ValueError):
+            for_package(self.root / "mount/usr/lib/triaevum", platform="linux",
+                        environ={"APPIMAGE": str(appimage)})
+
+    def test_portable_folder_inside_the_mount_is_refused(self):
+        mount = self.root / "mount"
+        layout = for_package(mount / "usr/lib/triaevum", platform="linux", environ={
+            "HOME": str(self.root / "home"), "APPIMAGE": str(mount / "TriAevum.AppImage")})
+        self.assertEqual(layout.activation, self.root / "home/.local/share/TriAevum")
+
+    def test_relative_or_missing_appimage_path_is_not_portable(self):
+        for appimage in ("TriAevum.AppImage", str(self.root / "absent/TriAevum.AppImage")):
+            with self.subTest(appimage=appimage):
+                layout = for_package(self.root / "mount/usr/lib/triaevum", platform="linux",
+                                     environ={"HOME": str(self.root / "home"),
+                                              "APPIMAGE": appimage})
+                self.assertEqual(layout.activation, self.root / "home/.local/share/TriAevum")
+
     def test_similar_directory_name_is_not_an_appimage(self):
         for package in (self.root / "opt/triaevum", self.root / "triaevum"):
             with self.subTest(package=package.name):
