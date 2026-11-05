@@ -47,6 +47,41 @@ jobs:
           sudo apt-get install -y --no-install-recommends binutils file unzip
       - name: Test the release policy before shipping anything
         run: python -m unittest discover tools/triaevum_release -p "test_*.py"
+      - name: Resolve the audited package source
+        # Cheap, explicit preflight: an unknown artifact name otherwise fails
+        # inside actions/toolkit with no hint about what this workflow needs.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_URL: ${{ inputs.package_url }}
+          PACKAGE_ARTIFACT: ${{ inputs.package_artifact }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$PACKAGE_URL" ]]; then
+            printf 'Package URL: %s\n' "$PACKAGE_URL"
+            exit 0
+          fi
+          if [[ -z "$PACKAGE_ARTIFACT" ]]; then
+            printf '::error::Set package_url or package_artifact. This workflow stages an audited Linux package and does not build one from source.\n' >&2
+            exit 1
+          fi
+          # Query the run the download step reads from, so this check cannot
+          # pass on an artifact that download-artifact would not find.
+          available="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
+            --jq '.artifacts[] | .name' 2>/dev/null || true)"
+          if grep -Fxq "$PACKAGE_ARTIFACT" <<< "$available"; then
+            printf 'Package artifact: %s\n' "$PACKAGE_ARTIFACT"
+            exit 0
+          fi
+          {
+            printf '::error::No artifact named "%s" in run %s of %s.\n' "$PACKAGE_ARTIFACT" "$GITHUB_RUN_ID" "$GITHUB_REPOSITORY"
+            printf 'This workflow stages an audited Linux release package created by the publisher build; it cannot build one from source.\n'
+            printf 'Supply it as either:\n'
+            printf '  package_url       an HTTPS archive of the audited Linux package (a release asset, for example)\n'
+            printf '  package_artifact  an artifact uploaded earlier in this same run with actions/upload-artifact\n'
+            printf 'Artifacts in this run:\n'
+            printf '%s\n' "${available:-none}" | sed 's/^/  /'
+          } >&2
+          exit 1
       - name: Download the audited package artifact
         if: inputs.package_url == ''
         uses: actions/download-artifact@v4
