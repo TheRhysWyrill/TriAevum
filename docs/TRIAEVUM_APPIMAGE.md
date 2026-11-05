@@ -43,6 +43,10 @@ empty installation.
 The order is fixed: an existing writable portable folder, then an existing
 shared installation, then a new portable folder, then the shared root. An
 unwritable portable folder never silently becomes a different data directory.
+AppRun also exports `XDG_DATA_HOME` as the AppImage's own directory when that
+directory is writable, so a repack of a published AppImage gets the same
+portable root even though its frozen Forge predates this policy; a read-only
+location is left to the per-user default.
 Mount path/name changes must not change either directory, and both remain
 outside the mounted AppDir. AppRun also works from an extracted AppDir.
 The shared transactional Forge update path rebinds packaged runtime updates;

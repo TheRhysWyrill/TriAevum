@@ -4,6 +4,15 @@ set -eu
 APPDIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 export APPDIR
 package="$APPDIR/usr/lib/triaevum"
+# Portable storage: a writable AppImage location keeps the writable root in a
+# TriAevum folder beside the file, because the shared root is XDG_DATA_HOME's
+# TriAevum folder. Read-only media keeps the per-user default instead of
+# failing every write. host_layout makes the same choice from the payload.
+if [ -n "${APPIMAGE:-}" ] && [ -d "$(dirname -- "$APPIMAGE")" ] &&
+   [ -w "$(dirname -- "$APPIMAGE")" ]; then
+    XDG_DATA_HOME="$(CDPATH= cd -- "$(dirname -- "$APPIMAGE")" && pwd)"
+    export XDG_DATA_HOME
+fi
 export LD_LIBRARY_PATH="$package/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 # lib/compat-cxx carries the SDK's libstdc++/libgcc_s. Use it only when the
 # host's libstdc++ is missing or older: one copy serves the whole process,

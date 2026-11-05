@@ -1,11 +1,17 @@
 name: TriAevum AppImage builder
 
-# Publisher build, not player qualification. The audited Linux release package
-# is produced outside CI (runtime built in the Steam Runtime 4 SDK, frozen
-# Forge, publisher-built title module), then this workflow stages the AppDir
-# with tools/triaevum_release/appimage_package.py and packages it with the
+# Builds a Linux AppImage; it is not player qualification. The payload comes
+# from one of two audited sources, never from a source build: an audited Linux
+# release package (artifact or URL), or a published AppImage to repack, which
+# already carries the same payload. Repacking reuses that payload untouched and
+# rebuilds only the wrapper from this repository (AppRun, desktop entry, icon).
+# The packaged payload includes the iMMERSE module, which its author licensed to
+# TriAevum only: publishing a repacked image outside that permission is not
+# covered by the GPL (see LICENSE_SCOPE.md).
+#
+# Staging and packaging use tools/triaevum_release/appimage_package.py and the
 # pinned appimagetool and type2 runtime that scripts/package-appimage.sh
-# verifies by SHA-256. It never downloads tools implicitly and never publishes.
+# verifies by SHA-256. Tools are never downloaded implicitly; nothing publishes.
 on:
   workflow_dispatch:
     inputs:
@@ -13,6 +19,12 @@ on:
         description: "Release version used in the artifact name, for example v0.8.0-beta.1.2"
         type: string
         required: true
+      base_appimage_url:
+        description: "Repack mode: published TriAevum Linux-x86_64.AppImage reused as the payload; takes precedence over the package inputs"
+        type: string
+        # Pinned published source, so one dispatch works without arguments.
+        # Change this URL and the version below together for a newer release.
+        default: "https://github.com/coccofresco/TriAevum/releases/download/v0.8.0-beta.1.2/TriAevum-v0.8.0-beta.1.2-Linux-x86_64.AppImage"
       package_artifact:
         description: "Artifact holding the audited Linux package: an extracted tree with release-manifest.json, or one .tar.gz/.tgz/.zip"
         type: string
@@ -50,6 +62,7 @@ jobs:
       - name: Resolve the audited package source
         # Cheap, explicit preflight: an unknown artifact name otherwise fails
         # inside actions/toolkit with no hint about what this workflow needs.
+        if: inputs.base_appimage_url == ''
         env:
           GH_TOKEN: ${{ github.token }}
           PACKAGE_URL: ${{ inputs.package_url }}
@@ -75,7 +88,8 @@ jobs:
           {
             printf '::error::No artifact named "%s" in run %s of %s.\n' "$PACKAGE_ARTIFACT" "$GITHUB_RUN_ID" "$GITHUB_REPOSITORY"
             printf 'This workflow stages an audited Linux release package created by the publisher build; it cannot build one from source.\n'
-            printf 'Supply it as either:\n'
+            printf 'Supply it as any of:\n'
+            printf '  base_appimage_url a published TriAevum AppImage to repack, when no separate package exists\n'
             printf '  package_url       an HTTPS archive of the audited Linux package (a release asset, for example)\n'
             printf '  package_artifact  an artifact uploaded earlier in this same run with actions/upload-artifact\n'
             printf 'Artifacts in this run:\n'
@@ -83,13 +97,13 @@ jobs:
           } >&2
           exit 1
       - name: Download the audited package artifact
-        if: inputs.package_url == ''
+        if: inputs.base_appimage_url == '' && inputs.package_url == ''
         uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.package_artifact }}
           path: build/download
       - name: Download the audited package URL
-        if: inputs.package_url != ''
+        if: inputs.base_appimage_url == '' && inputs.package_url != ''
         env:
           PACKAGE_URL: ${{ inputs.package_url }}
         run: |
@@ -103,6 +117,7 @@ jobs:
           curl --fail --location --retry 3 --retry-delay 2 \
             --output "build/download/$name" "$PACKAGE_URL"
       - name: Locate the audited Linux package
+        if: inputs.base_appimage_url == ''
         run: |
           set -euo pipefail
           shopt -s globstar nullglob
@@ -143,6 +158,42 @@ jobs:
               raise SystemExit(f"AppImage requires an audited Linux x86-64 package, not {release['target']}")
           PY
           printf 'TRIAEVUM_PACKAGE=%s\n' "$package" >> "$GITHUB_ENV"
+      - name: Download the published AppImage to repack
+        if: inputs.base_appimage_url != ''
+        env:
+          BASE_URL: ${{ inputs.base_appimage_url }}
+        run: |
+          set -euo pipefail
+          mkdir -p build/base
+          curl --fail --location --retry 3 --retry-delay 2 \
+            --output build/base/base.AppImage "$BASE_URL"
+          chmod 0755 build/base/base.AppImage
+          printf 'BASE_APPIMAGE=%s\n' "$GITHUB_WORKSPACE/build/base/base.AppImage" >> "$GITHUB_ENV"
+      - name: Extract the audited payload from that AppImage
+        # Repack mode: the published file already carries an audited payload, so
+        # no publisher build is needed. The payload is staged unchanged; only
+        # AppRun, the desktop entry and the icon come from this repository.
+        if: inputs.base_appimage_url != ''
+        run: |
+          set -euo pipefail
+          mkdir -p build/base/extract
+          cd build/base/extract
+          "$BASE_APPIMAGE" --appimage-extract >/dev/null
+          test -f squashfs-root/usr/lib/triaevum/release-manifest.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          payload = Path("squashfs-root/usr/lib/triaevum")
+          manifest = json.loads((payload / "release-manifest.json").read_text(encoding="utf-8"))
+          release = manifest["release"]
+          print("base target:", release["target"])
+          print("base version:", release["version"])
+          print("base files:", len(manifest["files"]))
+          if release["target"] != "x86_64-unknown-linux-gnu":
+              raise SystemExit(f"not a Linux payload: {release['target']}")
+          PY
+          printf 'TRIAEVUM_PACKAGE=%s\n' "$GITHUB_WORKSPACE/build/base/extract/squashfs-root/usr/lib/triaevum" >> "$GITHUB_ENV"
       - name: Acquire the pinned AppImage tools
         # scripts/package-appimage.sh owns the SHA-256 pins and refuses others.
         run: |
